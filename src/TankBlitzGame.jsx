@@ -16,7 +16,9 @@ const MIN_CAMERA_DISTANCE = 3;
 const MAX_CAMERA_DISTANCE = 15;
 const CAMERA_ZOOM_SPEED = 0.5;
 const CAMERA_ROTATION_SPEED = 0.01;
-
+const COLLISION_THRESHOLD = 1.0; // Minimum distance between objects
+const PROJECTILE_DAMAGE = 20;
+const ARENA_SIZE = 40;
 
 // Tank class definitions
 const TANK_CLASSES = {
@@ -115,10 +117,19 @@ export default function TankBlitzGame() {
     const directionalLight = new THREE.DirectionalLight(0xffffff, 1);
     directionalLight.position.set(5, 10, 5);
     directionalLight.castShadow = true;
+    directionalLight.shadow.camera.left = -ARENA_SIZE / 2;
+    directionalLight.shadow.camera.right = ARENA_SIZE / 2;
+    directionalLight.shadow.camera.top = ARENA_SIZE / 2;
+    directionalLight.shadow.camera.bottom = -ARENA_SIZE / 2;
+    directionalLight.shadow.camera.near = 0.1;
+    directionalLight.shadow.camera.far = 50;
+    directionalLight.shadow.mapSize.width = 2048;
+    directionalLight.shadow.mapSize.height = 2048;
+    directionalLight.shadow.bias = -0.001;
     scene.add(directionalLight);
 
     // Create arena floor
-    const floorGeometry = new THREE.PlaneGeometry(40, 40);
+    const floorGeometry = new THREE.PlaneGeometry(ARENA_SIZE, ARENA_SIZE);
     const floorMaterial = new THREE.MeshStandardMaterial({
       color: 0x333333,
       roughness: 0.8,
@@ -294,9 +305,10 @@ export default function TankBlitzGame() {
 
     obstaclePositions.forEach(pos => {
       const obstacle = new THREE.Mesh(obstacleGeometry, obstacleMaterial);
-      obstacle.position.set(pos.x, 0.75, pos.z);
+      obstacle.position.set(pos.x, 0.5, pos.z);
       obstacle.castShadow = true;
       obstacle.receiveShadow = true;
+      obstacle.userData.type = 'destructible';
       scene.add(obstacle);
     });
 
@@ -320,8 +332,124 @@ export default function TankBlitzGame() {
       obstacle.position.set(pos.x, 0.5, pos.z);
       obstacle.castShadow = true;
       obstacle.receiveShadow = true;
+      obstacle.userData.type = 'destructible';
       scene.add(obstacle);
     });
+  };
+
+  const checkCollisions = () => {
+    if (!tankRef.current || !sceneRef.current) return;
+
+    const tankPosition = tankRef.current.position.clone();
+    const obstacles = sceneRef.current.children.filter(child =>
+      child.userData.type === 'obstacle' || child.userData.type === 'destructible'
+    );
+
+    // Check tank-obstacle collisions
+    obstacles.forEach(obstacle => {
+      const obstaclePosition = obstacle.position.clone();
+      const distance = new THREE.Vector2(
+        tankPosition.x - obstaclePosition.x,
+        tankPosition.z - obstaclePosition.z
+      ).length();
+      const minDistance = COLLISION_THRESHOLD + (obstacle.geometry.parameters.width || 0) / 2;
+
+
+      if (distance < minDistance) {
+        // Push tank away from obstacle
+        const pushVector = new THREE.Vector3(
+          tankPosition.x - obstaclePosition.x,
+          0,
+          tankPosition.z - obstaclePosition.z
+        ).normalize();
+        tankRef.current.position.add(pushVector.multiplyScalar(minDistance - distance));
+      }
+    });
+    tankRef.current.position.y = 0.5;
+    // Check projectile collisions
+    projectilesRef.current.forEach((proj, index) => {
+      const projectilePosition = proj.projectile.position.clone();
+
+      // Check projectile-obstacle collisions
+      obstacles.forEach(obstacle => {
+        const obstaclePosition = obstacle.position.clone();
+        const distance = projectilePosition.distanceTo(obstaclePosition);
+        const collisionThreshold = (obstacle.geometry.parameters.width || 0) / 2;
+
+        if (distance < collisionThreshold) {
+          // Handle destructible obstacles
+          if (obstacle.userData.type === 'destructible') {
+            sceneRef.current.remove(obstacle);
+            setScore(prev => prev + 5);
+
+            // Add destruction effect
+            createDestructionEffect(obstaclePosition);
+          }
+          // Remove projectile
+          sceneRef.current.remove(proj.projectile);
+          sceneRef.current.remove(proj.trail);
+          projectilesRef.current.splice(index, 1);
+        }
+      });
+
+      // Check projectile-tank collisions
+      if (projectilePosition.distanceTo(tankPosition) < COLLISION_THRESHOLD) {
+        // Remove projectile
+        sceneRef.current.remove(proj.projectile);
+        sceneRef.current.remove(proj.trail);
+        projectilesRef.current.splice(index, 1);
+
+        // Damage tank
+        setHealth(prev => Math.max(0, prev - PROJECTILE_DAMAGE));
+      }
+    });
+  };
+
+  const createDestructionEffect = (position) => {
+    const particles = [];
+    const particleCount = 10;
+
+    for (let i = 0; i < particleCount; i++) {
+      const geometry = new THREE.BoxGeometry(0.2, 0.2, 0.2);
+      const material = new THREE.MeshBasicMaterial({
+        color: 0xcc8844,
+        transparent: true,
+        opacity: 1.0,
+      });
+      const particle = new THREE.Mesh(geometry, material);
+
+      particle.position.copy(position);
+      particle.userData.velocity = new THREE.Vector3(
+        (Math.random() - 0.5) * 0.2,
+        Math.random() * 0.2,
+        (Math.random() - 0.5) * 0.2
+      );
+
+      sceneRef.current.add(particle);
+      particles.push(particle);
+    }
+
+    // Animate particles
+    const animateParticles = () => {
+      particles.forEach((particle, index) => {
+        particle.position.add(particle.userData.velocity);
+        particle.userData.velocity.y -= 0.01; // Gravity
+        particle.material.opacity -= 0.02;
+        particle.rotation.x += 0.1;
+        particle.rotation.z += 0.1;
+
+        if (particle.material.opacity <= 0) {
+          sceneRef.current.remove(particle);
+          particles.splice(index, 1);
+        }
+      });
+
+      if (particles.length > 0) {
+        requestAnimationFrame(animateParticles);
+      }
+    };
+
+    animateParticles();
   };
 
   // Fire projectile
@@ -340,12 +468,19 @@ export default function TankBlitzGame() {
     const projectile = new THREE.Mesh(projectileGeometry, projectileMaterial);
 
     // Set projectile position and direction
+
+    // Calculate combined rotation of tank and turret
+    const tankWorldQuaternion = new THREE.Quaternion();
+    tankRef.current.getWorldQuaternion(tankWorldQuaternion);
+
+    const direction = new THREE.Vector3(0, 0, 1);
+    direction.applyQuaternion(tankWorldQuaternion); // Apply tank rotation
+    direction.applyAxisAngle(new THREE.Vector3(0, 1, 0), turretRef.current.rotation.y); // Apply turret rotation
+
+    // Set projectile position
     projectile.position.copy(tankRef.current.position);
     projectile.position.y += 0.8;
-
-    // Calculate direction from turret rotation
-    const direction = new THREE.Vector3(0, 0, 1);
-    direction.applyQuaternion(turretRef.current.quaternion);
+    projectile.position.add(direction.clone().multiplyScalar(1));
 
     // Create trail effect
     const trailGeometry = new THREE.CylinderGeometry(0.03, 0.03, 0.5, 8);
@@ -792,9 +927,8 @@ export default function TankBlitzGame() {
     tankRef.current.position.z += tankDirection.z * moveZ * speed;
 
     // Keep tank within arena bounds
-    const arenaSize = 30;
-    tankRef.current.position.x = Math.max(-arenaSize / 2, Math.min(arenaSize / 2, tankRef.current.position.x));
-    tankRef.current.position.z = Math.max(-arenaSize / 2, Math.min(arenaSize / 2, tankRef.current.position.z));
+    tankRef.current.position.x = Math.max(-ARENA_SIZE / 2, Math.min(ARENA_SIZE / 2, tankRef.current.position.x));
+    tankRef.current.position.z = Math.max(-ARENA_SIZE / 2, Math.min(ARENA_SIZE / 2, tankRef.current.position.z));
 
     // Rotate turret based on mouse position
     if (turretRef.current) {
@@ -815,8 +949,13 @@ export default function TankBlitzGame() {
         // Calculate target angle
         const targetAngle = Math.atan2(direction.x, direction.z);
 
-        // Get current turret angle
-        const currentAngle = turretRef.current.rotation.y;
+        // Get current turret angle in world space
+        const worldQuaternion = new THREE.Quaternion();
+        tankRef.current.getWorldQuaternion(worldQuaternion);
+        const currentAngle = turretRef.current.rotation.y + Math.atan2(
+          2 * (worldQuaternion.w * worldQuaternion.y + worldQuaternion.x * worldQuaternion.z),
+          1 - 2 * (worldQuaternion.y * worldQuaternion.y + worldQuaternion.z * worldQuaternion.z)
+        );
 
         // Calculate shortest rotation path
         let angleDiff = targetAngle - currentAngle;
@@ -843,8 +982,8 @@ export default function TankBlitzGame() {
       // Check if projectile is out of bounds
       proj.lifeTime++;
       if (proj.lifeTime > proj.maxLife ||
-        Math.abs(proj.projectile.position.x) > 20 ||
-        Math.abs(proj.projectile.position.z) > 20) {
+        Math.abs(proj.projectile.position.x) > ARENA_SIZE ||
+        Math.abs(proj.projectile.position.z) > ARENA_SIZE) {
         projectilesToRemove.push(index);
       }
     });
@@ -856,6 +995,8 @@ export default function TankBlitzGame() {
       sceneRef.current.remove(proj.trail);
       projectilesRef.current.splice(index, 1);
     });
+
+    checkCollisions();
 
     // Update camera position
     if (cameraRef.current && tankRef.current) {
@@ -962,7 +1103,7 @@ export default function TankBlitzGame() {
   return (
     <div className="relative w-full h-screen overflow-hidden bg-gray-900">
       {!gameStarted ? (
-        <div className="absolute inset-0 flex flex-col items-center justify-center z-10 bg-gray-900 bg-opacity-90 p-4">
+        <div className="absolute inset-0 flex flex-col items-center justify-center z-10 bg-gray-900 bg-opacity-70 p-4">
           <h1 className="text-4xl font-bold text-blue-500 mb-8">TANK BLITZ: Velocity Core</h1>
 
           <div className="flex flex-wrap justify-center gap-6 mb-8">

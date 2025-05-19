@@ -15,8 +15,8 @@ const DASH_DURATION = 500; // in ms
 const MIN_CAMERA_DISTANCE = 3;
 const MAX_CAMERA_DISTANCE = 15;
 const CAMERA_ZOOM_SPEED = 0.5;
-const CAMERA_ROTATION_SPEED = 0.01;
-const COLLISION_THRESHOLD = 1.0; // Minimum distance between objects
+const CAMERA_ROTATION_SPEED = 0.005;
+const COLLISION_THRESHOLD = 1.4; // Minimum distance between objects
 const PROJECTILE_DAMAGE = 20;
 const ARENA_SIZE = 40;
 
@@ -122,7 +122,7 @@ export default function TankBlitzGame() {
     directionalLight.shadow.camera.top = ARENA_SIZE / 2;
     directionalLight.shadow.camera.bottom = -ARENA_SIZE / 2;
     directionalLight.shadow.camera.near = 0.1;
-    directionalLight.shadow.camera.far = 50;
+    directionalLight.shadow.camera.far = 2000;
     directionalLight.shadow.mapSize.width = 2048;
     directionalLight.shadow.mapSize.height = 2048;
     directionalLight.shadow.bias = -0.001;
@@ -479,15 +479,32 @@ export default function TankBlitzGame() {
 
     // Set projectile position
     projectile.position.copy(tankRef.current.position);
-    projectile.position.y += 0.8;
-    projectile.position.add(direction.clone().multiplyScalar(1));
+    projectile.position.y += 0.65; // Adjust height
+    projectile.position.add(direction.clone().multiplyScalar(1.1));
+
+        // Add muzzle flash effect
+    const flashGeometry = new THREE.SphereGeometry(0.2, 2.5, 8);
+    const flashMaterial = new THREE.MeshBasicMaterial({
+      color: 0xffff00,
+      transparent: true,
+      opacity: 0.8,
+    });
+    const flash = new THREE.Mesh(flashGeometry, flashMaterial);
+    flash.position.copy(projectile.position);
+    flash.position.add(direction.clone().multiplyScalar(0.1));
+    sceneRef.current.add(flash);
+
+    // Remove flash after a short time
+    setTimeout(() => {
+      sceneRef.current.remove(flash);
+    }, 100);
 
     // Create trail effect
     const trailGeometry = new THREE.CylinderGeometry(0.03, 0.03, 0.5, 8);
     const trailMaterial = new THREE.MeshBasicMaterial({
-      color: TANK_CLASSES[tankClass].color,
+      color: 0xffff00,
       transparent: true,
-      opacity: 0.7,
+      opacity: 0.0,
     });
     const trail = new THREE.Mesh(trailGeometry, trailMaterial);
     trail.rotation.x = Math.PI / 2;
@@ -496,7 +513,9 @@ export default function TankBlitzGame() {
 
     sceneRef.current.add(projectile);
     sceneRef.current.add(trail);
-
+    setTimeout(() => {
+      trail.material.opacity = 0.4;
+    }, 150);
     // Add to projectiles list
     projectilesRef.current.push({
       projectile,
@@ -517,22 +536,7 @@ export default function TankBlitzGame() {
     // Decrease ammo
     setAmmo((prev) => Math.max(0, prev - 1));
 
-    // Add muzzle flash effect
-    const flashGeometry = new THREE.SphereGeometry(0.2, 8, 8);
-    const flashMaterial = new THREE.MeshBasicMaterial({
-      color: 0xffff00,
-      transparent: true,
-      opacity: 0.8,
-    });
-    const flash = new THREE.Mesh(flashGeometry, flashMaterial);
-    flash.position.copy(projectile.position);
-    flash.position.add(direction.clone().multiplyScalar(0.5));
-    sceneRef.current.add(flash);
 
-    // Remove flash after a short time
-    setTimeout(() => {
-      sceneRef.current.remove(flash);
-    }, 100);
   };
 
   // Use ability
@@ -1057,11 +1061,6 @@ export default function TankBlitzGame() {
     if (requestRef.current) {
       cancelAnimationFrame(requestRef.current);
     }
-
-    // Restart game
-    setTimeout(() => {
-      startGame();
-    }, 100);
   };
 
   // Toggle controls display
@@ -1174,11 +1173,10 @@ export default function TankBlitzGame() {
                 <li className="mb-1">• <strong>WASD</strong> - Move tank</li>
                 <li className="mb-1">• <strong>Mouse</strong> - Aim turret</li>
                 <li className="mb-1">• <strong>Left Click</strong> - Fire main cannon</li>
-                <li className="mb-1">• <strong>Right Click</strong> - Use ability</li>
+                <li className="mb-1">• <strong>Middle Click</strong> - Use ability</li>
+                <li className="mb-1">• <strong>Right Click + Drag</strong> - Rotate camera</li>
                 <li className="mb-1">• <strong>Spacebar</strong> - Use mobility skill</li>
                 <li className="mb-1">• <strong>Mouse Wheel</strong> - Zoom in/out</li>
-                <li className="mb-1">• <strong>Right Click + Drag</strong> - Rotate camera</li>
-                <li className="mb-1">• <strong>Middle Click</strong> - Use ability</li>
               </ul>
             </div>
           )}
@@ -1220,7 +1218,7 @@ export default function TankBlitzGame() {
             <div className={`w-16 h-16 rounded-full flex items-center justify-center ${cooldown ? 'bg-gray-700 bg-opacity-70' : 'bg-blue-800 bg-opacity-50'
               }`}>
               <div className="w-12 h-12 rounded-full bg-gray-800 flex items-center justify-center">
-                <span className="text-2xl text-white">🔫</span>
+                <span className="text-2xl text-white">💥</span>
               </div>
             </div>
 

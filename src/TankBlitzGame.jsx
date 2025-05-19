@@ -16,7 +16,7 @@ const MIN_CAMERA_DISTANCE = 3;
 const MAX_CAMERA_DISTANCE = 15;
 const CAMERA_ZOOM_SPEED = 0.5;
 const CAMERA_ROTATION_SPEED = 0.005;
-const COLLISION_THRESHOLD = 1.4; // Minimum distance between objects
+const COLLISION_THRESHOLD = 1.0; // Minimum distance between objects
 const PROJECTILE_DAMAGE = 20;
 const ARENA_SIZE = 40;
 
@@ -122,7 +122,7 @@ export default function TankBlitzGame() {
     directionalLight.shadow.camera.top = ARENA_SIZE / 2;
     directionalLight.shadow.camera.bottom = -ARENA_SIZE / 2;
     directionalLight.shadow.camera.near = 0.1;
-    directionalLight.shadow.camera.far = 2000;
+    directionalLight.shadow.camera.far = 100;
     directionalLight.shadow.mapSize.width = 2048;
     directionalLight.shadow.mapSize.height = 2048;
     directionalLight.shadow.bias = -0.001;
@@ -571,33 +571,61 @@ export default function TankBlitzGame() {
   const deployMine = () => {
     if (!tankRef.current || !sceneRef.current) return;
 
-    const mineGeometry = new THREE.CylinderGeometry(0.2, 0.2, 0.1, 8);
-    const mineMaterial = new THREE.MeshStandardMaterial({
+    // Create mine group for better organization
+    const mineGroup = new THREE.Group();
+
+    // Create base of the mine
+    const baseGeometry = new THREE.CylinderGeometry(0.3, 0.35, 0.1, 16);
+    const baseMaterial = new THREE.MeshStandardMaterial({
+      color: 0x333333,
+      roughness: 0.7,
+      metalness: 0.8,
+    });
+    const base = new THREE.Mesh(baseGeometry, baseMaterial);
+    mineGroup.add(base);
+
+    // Create warning lights
+    const lightGeometry = new THREE.SphereGeometry(0.06, 8, 8);
+    const lightMaterial = new THREE.MeshStandardMaterial({
       color: 0xff0000,
       emissive: 0xff0000,
-      emissiveIntensity: 0.5,
+      emissiveIntensity: 1,
       roughness: 0.3,
       metalness: 0.7,
     });
-    const mine = new THREE.Mesh(mineGeometry, mineMaterial);
 
-    mine.position.copy(tankRef.current.position);
-    mine.position.y = 0.05;
-    mine.rotation.x = Math.PI / 2;
+    // Add 4 warning lights around the mine
+    for (let i = 0; i < 4; i++) {
+      const light = new THREE.Mesh(lightGeometry, lightMaterial);
+      light.position.x = Math.sin(i * Math.PI / 2) * 0.25;
+      light.position.z = Math.cos(i * Math.PI / 2) * 0.25;
+      light.position.y = 0.05;
+      mineGroup.add(light);
+    }
 
-    sceneRef.current.add(mine);
+    // Position mine at tank's location
+    const position = tankRef.current.position.clone();
+    position.y = 0.05; // Set consistent height
+    mineGroup.position.copy(position);
 
-    // Add blinking effect
+    // Don't copy tank's rotation, mine should lay flat
+    mineGroup.rotation.set(0, 0, 0);
+
+    sceneRef.current.add(mineGroup);
+
+    // Add blinking effect to warning lights
     let visible = true;
     const blinkInterval = setInterval(() => {
-      mine.visible = visible;
+      mineGroup.children.slice(1).forEach(light => {
+        light.material.emissiveIntensity = visible ? 1 : 0.2;
+      });
       visible = !visible;
     }, 500);
 
     // Auto-detonate after delay
     setTimeout(() => {
       clearInterval(blinkInterval);
-      sceneRef.current.remove(mine);
+      sceneRef.current.remove(mineGroup);
 
       // Create explosion effect
       const explosionGeometry = new THREE.SphereGeometry(2, 16, 16);
@@ -607,17 +635,92 @@ export default function TankBlitzGame() {
         opacity: 0.7,
       });
       const explosion = new THREE.Mesh(explosionGeometry, explosionMaterial);
-      explosion.position.copy(mine.position);
+      explosion.position.copy(mineGroup.position);
       sceneRef.current.add(explosion);
 
-      // Fade out explosion
+      const blastCenter = mineGroup.position;
+      const innerRadius = 2;
+      const midRadius = 3.5;
+      const outerRadius = 5;
+      const innerDamage = 5;
+      const midDamage = 3;
+      const outerDamage = 1;
+
+      // Check objects in scene for immediate destruction
+      sceneRef.current.children.forEach(object => {
+        if (object.userData.type === 'destructible') {
+          const distance = object.position.distanceTo(blastCenter);
+          if (distance <= innerRadius) {
+            sceneRef.current.remove(object);
+            createDestructionEffect(object.position);
+            setScore(prev => prev + 3);
+          }
+        }
+      });
+
+      // Enhanced explosion particles
+      const particleCount = 20;
+      const particles = [];
+      for (let i = 0; i < particleCount; i++) {
+        const particleGeometry = new THREE.SphereGeometry(0.1, 8, 8);
+        const particleMaterial = new THREE.MeshBasicMaterial({
+          color: 0xff3300,
+          transparent: true,
+          opacity: 0.8,
+        });
+        const particle = new THREE.Mesh(particleGeometry, particleMaterial);
+        
+        const angle = (Math.PI * 2 * i) / particleCount;
+        const radius = Math.random() * 2;
+        particle.position.set(
+          blastCenter.x + Math.cos(angle) * radius,
+          blastCenter.y + Math.random() * 2,
+          blastCenter.z + Math.sin(angle) * radius
+        );
+        
+        particle.userData.velocity = new THREE.Vector3(
+          Math.cos(angle) * 0.1,
+          0.1,
+          Math.sin(angle) * 0.1
+        );
+        
+        sceneRef.current.add(particle);
+        particles.push(particle);
+      }
+
+      // Fade out explosion and particles
       const fadeInterval = setInterval(() => {
         if (explosion.material.opacity <= 0) {
           clearInterval(fadeInterval);
           sceneRef.current.remove(explosion);
+          particles.forEach(particle => sceneRef.current.remove(particle));
         } else {
           explosion.material.opacity -= 0.05;
           explosion.scale.multiplyScalar(1.05);
+          
+          // Apply damage based on distance from blast center
+          if (tankRef.current) {
+            const distanceToTank = tankRef.current.position.distanceTo(blastCenter);
+            let tickDamage = 0;
+
+            if (distanceToTank <= innerRadius) {
+              tickDamage = innerDamage;
+            } else if (distanceToTank <= midRadius) {
+              tickDamage = midDamage;
+            } else if (distanceToTank <= outerRadius) {
+              tickDamage = outerDamage;
+            }
+
+            if (tickDamage > 0) {
+              setHealth(prev => Math.max(0, prev - tickDamage));
+            }
+          }
+          
+          particles.forEach(particle => {
+            particle.position.add(particle.userData.velocity);
+            particle.userData.velocity.y -= 0.01; // gravity
+            particle.material.opacity -= 0.03;
+          });
         }
       }, 50);
 
